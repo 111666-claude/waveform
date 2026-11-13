@@ -119,6 +119,175 @@ func testFuzzColor(t *testing.T, in []color.Color) {
 	}
 }
 
+// TestGradientColorEndpoints verifies that GradientColor returns exactly the
+// start color at n=0 and exactly the end color at n=maxN.
+func TestGradientColorEndpoints(t *testing.T) {
+	start := color.RGBA{255, 0, 0, 128}
+	end := color.RGBA{0, 255, 0, 64}
+	const maxN = 1000
+
+	fn := GradientColor(start, end)
+
+	if out := fn(0, 0, 0, maxN, 0, 0); out != start {
+		t.Fatalf("unexpected color at n=0: %v != %v", out, start)
+	}
+	if out := fn(maxN, 0, 0, maxN, 0, 0); out != end {
+		t.Fatalf("unexpected color at n=maxN: %v != %v", out, end)
+	}
+}
+
+// TestGradientColorMonotonic verifies that every channel (including alpha)
+// stays within the endpoints' range and changes monotonically as n advances.
+func TestGradientColorMonotonic(t *testing.T) {
+	start := color.RGBA{255, 0, 0, 128}
+	end := color.RGBA{0, 255, 0, 64}
+	const maxN = 1000
+
+	fn := GradientColor(start, end)
+
+	prev := fn(0, 0, 0, maxN, 0, 0).(color.RGBA)
+	for n := 1; n <= maxN; n++ {
+		cur := fn(n, 0, 0, maxN, 0, 0).(color.RGBA)
+
+		// R descends 255 -> 0, G ascends 0 -> 255, B stays 0, A descends 128 -> 64
+		checkChannel(t, n, "R", prev.R, cur.R, start.R, end.R)
+		checkChannel(t, n, "G", prev.G, cur.G, start.G, end.G)
+		checkChannel(t, n, "B", prev.B, cur.B, start.B, end.B)
+		checkChannel(t, n, "A", prev.A, cur.A, start.A, end.A)
+
+		prev = cur
+	}
+}
+
+// TestGradientColorInterpolatesAlpha verifies that alpha is interpolated along
+// with the color channels, landing on the expected midpoint value.
+func TestGradientColorInterpolatesAlpha(t *testing.T) {
+	start := color.RGBA{255, 0, 0, 128}
+	end := color.RGBA{0, 255, 0, 64}
+	const maxN = 1000
+
+	fn := GradientColor(start, end)
+	mid := fn(maxN/2, 0, 0, maxN, 0, 0).(color.RGBA)
+
+	if mid.A != 96 {
+		t.Fatalf("unexpected midpoint alpha: %v != 96", mid.A)
+	}
+	if mid.R != 128 || mid.G != 128 {
+		t.Fatalf("unexpected midpoint color: %v", mid)
+	}
+}
+
+// TestGradientColorDegenerate verifies that GradientColor never panics and
+// always returns a sane endpoint color for degenerate inputs: maxN=0,
+// negative n, and n beyond maxN.
+func TestGradientColorDegenerate(t *testing.T) {
+	start := color.RGBA{255, 0, 0, 128}
+	end := color.RGBA{0, 255, 0, 64}
+
+	fn := GradientColor(start, end)
+
+	// maxN=0 must not divide by zero or panic
+	if out := fn(0, 0, 0, 0, 0, 0); out != start {
+		t.Fatalf("unexpected color for maxN=0: %v != %v", out, start)
+	}
+	if out := fn(5, 0, 0, 0, 0, 0); out != start {
+		t.Fatalf("unexpected color for n>maxN=0: %v != %v", out, start)
+	}
+
+	// Negative n clamps to start
+	if out := fn(-1, 0, 0, 1000, 0, 0); out != start {
+		t.Fatalf("unexpected color for negative n: %v != %v", out, start)
+	}
+
+	// n beyond maxN clamps to end
+	if out := fn(1001, 0, 0, 1000, 0, 0); out != end {
+		t.Fatalf("unexpected color for n>maxN: %v != %v", out, end)
+	}
+}
+
+// TestGradientColorPure verifies that GradientColor is a pure function of its
+// inputs: repeated calls, out-of-order n values, and backwards n sequences all
+// produce identical results for identical inputs.
+func TestGradientColorPure(t *testing.T) {
+	start := color.RGBA{255, 0, 0, 128}
+	end := color.RGBA{0, 255, 0, 64}
+	const maxN = 1000
+
+	fn := GradientColor(start, end)
+
+	// Walk forward, then backward, then repeat individual values; the color
+	// for a given n must always be the same.
+	forward := make([]color.Color, maxN+1)
+	for n := 0; n <= maxN; n++ {
+		forward[n] = fn(n, 0, 0, maxN, 0, 0)
+	}
+	for n := maxN; n >= 0; n-- {
+		if out := fn(n, 0, 0, maxN, 0, 0); out != forward[n] {
+			t.Fatalf("n=%d: color changed between calls: %v != %v", n, out, forward[n])
+		}
+	}
+	for n := 0; n <= maxN; n++ {
+		if out := fn(n, 0, 0, maxN, 0, 0); out != forward[n] {
+			t.Fatalf("n=%d: repeated call returned different color: %v != %v", n, out, forward[n])
+		}
+	}
+}
+
+// TestGradientColorSameEndpoints verifies that identical start and end colors
+// produce a constant color at every sample.
+func TestGradientColorSameEndpoints(t *testing.T) {
+	c := color.RGBA{10, 20, 30, 40}
+	fn := GradientColor(c, c)
+
+	for n := 0; n <= 100; n++ {
+		if out := fn(n, 0, 0, 100, 0, 0); out != c {
+			t.Fatalf("n=%d: unexpected color: %v != %v", n, out, c)
+		}
+	}
+}
+
+// TestGradientColorManySamples verifies that GradientColor produces valid,
+// in-range colors across a long waveform's worth of samples.
+func TestGradientColorManySamples(t *testing.T) {
+	start := color.RGBA{255, 0, 0, 128}
+	end := color.RGBA{0, 255, 0, 64}
+	const maxN = 6000
+
+	fn := GradientColor(start, end)
+
+	prev := fn(0, 0, 0, maxN, 0, 0).(color.RGBA)
+	for n := 1; n <= maxN; n++ {
+		cur := fn(n, 0, 0, maxN, 0, 0).(color.RGBA)
+
+		checkChannel(t, n, "R", prev.R, cur.R, start.R, end.R)
+		checkChannel(t, n, "G", prev.G, cur.G, start.G, end.G)
+		checkChannel(t, n, "B", prev.B, cur.B, start.B, end.B)
+		checkChannel(t, n, "A", prev.A, cur.A, start.A, end.A)
+
+		prev = cur
+	}
+}
+
+// checkChannel verifies that a channel value stays within the inclusive range
+// of its endpoints and moves monotonically toward the end value.
+func checkChannel(t *testing.T, n int, name string, prev, cur, start, end uint8) {
+	lo, hi := start, end
+	if lo > hi {
+		lo, hi = hi, lo
+	}
+
+	if cur < lo || cur > hi {
+		t.Fatalf("n=%d: channel %s out of range: %d not in [%d, %d]", n, name, cur, lo, hi)
+	}
+
+	if start <= end && cur < prev {
+		t.Fatalf("n=%d: channel %s not monotonically increasing: %d < %d", n, name, cur, prev)
+	}
+	if start >= end && cur > prev {
+		t.Fatalf("n=%d: channel %s not monotonically decreasing: %d > %d", n, name, cur, prev)
+	}
+}
+
 // testStripeColor is a test helper which aids in testing the StripeColor function.
 func testStripeColor(t *testing.T, in []color.Color, out []color.Color) {
 	// Validate that StripeColor produces expected output at each index

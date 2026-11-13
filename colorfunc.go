@@ -2,7 +2,6 @@ package waveform
 
 import (
 	"image/color"
-	"math"
 	"math/rand"
 	"time"
 )
@@ -47,67 +46,35 @@ func FuzzColor(colors ...color.Color) ColorFunc {
 }
 
 // GradientColor generates a ColorFunc which produces a color gradient between two
-// RGBA input colors.  The gradient attempts to gradually reduce the distance between
-// two colors, creating a sweeping color change effect in the resulting waveform
-// image.
+// RGBA input colors.  The gradient linearly interpolates every channel (including
+// alpha) between the two colors as n advances from 0 to maxN, creating a sweeping
+// color change effect in the resulting waveform image.
 //
-// BUG(mdlayher): GradientColor does not always produce very effective gradients.
-// It depends on how close input values are, and will require more investigation.
+// The returned function is pure: its output depends only on n and maxN, so
+// repeated, out-of-order, or decreasing n values always yield consistent colors.
 func GradientColor(start color.RGBA, end color.RGBA) ColorFunc {
-	// Current value starts at the first value, and gradually ascends or descends
-	// to the second.
-	current := start
-
-	// Calculate absolute distances between RGB values
-	distR := distanceUint8(start.R, end.R)
-	distG := distanceUint8(start.G, end.G)
-	distB := distanceUint8(start.B, end.B)
-
-	// Store last calculated values from each call
-	var lastR, lastG, lastB uint8
-
-	// Store last seen N value to calculate gradient
-	var lastN int
 	return func(n int, x int, y int, maxN int, maxX int, maxY int) color.Color {
-		// On first iteration, always return start value
-		if n == 0 {
+		// Degenerate or out-of-range inputs clamp to the nearest endpoint,
+		// so a zero maxN or a backwards n can never panic or misbehave.
+		if maxN <= 0 || n <= 0 {
 			return start
 		}
-
-		// On final iteration, always return end value
-		if n == maxN {
+		if n >= maxN {
 			return end
 		}
 
-		// Unless a new n value is entered, use the same color
-		if n <= lastN {
-			return current
+		// Linearly interpolate a single channel between a and b using integer
+		// math only, so results are exact, monotonic, and free of NaN.
+		lerp := func(a, b uint8) uint8 {
+			return uint8((int(a)*(maxN-n) + int(b)*n + maxN/2) / maxN)
 		}
 
-		// New n value, store it now
-		lastN = n
-
-		// Return the current color the vast majority of the time, so that
-		// the gradient is very gradual.
-		//
-		// This math is completely made up, but appears to work well enough
-		// for our purposes.
-		if n%(int(math.Pow(float64(maxN/255), 2))) != 0 {
-			return current
+		return color.RGBA{
+			R: lerp(start.R, end.R),
+			G: lerp(start.G, end.G),
+			B: lerp(start.B, end.B),
+			A: lerp(start.A, end.A),
 		}
-
-		// Recalculate current values, taking into account known starting points,
-		// ending points, etc.
-		current.R = stepValue(start.R > end.R, maxN, distR, current.R, lastR)
-		lastR = current.R
-
-		current.G = stepValue(start.G > end.G, maxN, distG, current.G, lastG)
-		lastG = current.G
-
-		current.B = stepValue(start.B > end.B, maxN, distB, current.B, lastB)
-		lastB = current.B
-
-		return current
 	}
 }
 
@@ -138,42 +105,6 @@ func StripeColor(colors ...color.Color) ColorFunc {
 
 		return colors[lastN%len(colors)]
 	}
-}
-
-// distanceUint8 calculates the absolute value of the distance between
-// two uint8 values.
-func distanceUint8(start uint8, end uint8) uint8 {
-	if start > end {
-		return start - end
-	}
-
-	return end - start
-}
-
-// stepValue returns a new uint8 color value, based upon a variety of input values.
-// TODO(mdlayher): clean this up or break it into smaller pieces
-func stepValue(greater bool, maxN int, dist uint8, current uint8, last uint8) uint8 {
-	// If no distance, always return current value
-	if dist == 0 {
-		return current
-	}
-
-	// Calculate step based upon max N and distance
-	step := uint8(math.Floor(float64(maxN) / float64(dist)))
-
-	// If start is greater, prevent underflow
-	if greater {
-		if current > 0 && (current-step) < last {
-			current -= step
-		}
-	} else {
-		// If end is greater, prevent overflow
-		if current < 255 && (current+step) > last {
-			current += step
-		}
-	}
-
-	return current
 }
 
 // filterNilColors strips any nil color.Color values from the input slice.
