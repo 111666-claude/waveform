@@ -2,6 +2,7 @@ package waveform
 
 import (
 	"image/color"
+	"math"
 	"math/rand"
 	"time"
 )
@@ -46,44 +47,46 @@ func FuzzColor(colors ...color.Color) ColorFunc {
 }
 
 // GradientColor generates a ColorFunc which produces a color gradient between two
-// RGBA input colors.  The gradient attempts to gradually reduce the distance between
-// two colors, creating a sweeping color change effect in the resulting waveform
-// image.
+// RGBA input colors.  The gradient gradually interpolates every channel, including
+// alpha, from the start color at n=0 to the end color at n=maxN, creating a
+// sweeping color change effect in the resulting waveform image.
+//
+// The returned ColorFunc is stateless: it holds no mutable data between calls,
+// so repeated, out-of-order, or concurrent invocations always produce the same
+// color for the same input values.  The interpolation factor derived from n and
+// maxN is clamped to [0, 1], so n values outside the [0, maxN] range do not
+// wrap around, and maxN <= 0 returns the start color instead of dividing by zero.
+// Each invocation performs a constant amount of work regardless of n or maxN.
 func GradientColor(start color.RGBA, end color.RGBA) ColorFunc {
-	// Float equivalents of color values
-	startFR, endFR := float64(start.R), float64(end.R)
-	startFG, endFG := float64(start.G), float64(end.G)
-	startFB, endFB := float64(start.B), float64(end.B)
+	// Float equivalents of color values, and the per-channel distance to
+	// travel from the start color to the end color.  These are computed once,
+	// so the closure itself only does constant work on each call.
+	startR, startG, startB, startA := float64(start.R), float64(start.G), float64(start.B), float64(start.A)
+	deltaR := float64(end.R) - startR
+	deltaG := float64(end.G) - startG
+	deltaB := float64(end.B) - startB
+	deltaA := float64(end.A) - startA
 
-	// Values used for RGBA and percentage
-	var r, g, b, p float64
 	return func(n int, x int, y int, maxN int, maxX int, maxY int) color.Color {
-		// Calculate percentage across waveform image
-		p = float64((float64(n) / float64(maxN)) * 100)
-
-		// Calculate new values for RGB using gradient algorithm
-		// Thanks: http://stackoverflow.com/questions/27532/generating-gradients-programmatically
-		r = (endFR * p) + (startFR * (1 - p))
-		g = (endFG * p) + (startFG * (1 - p))
-		b = (endFB * p) + (startFB * (1 - p))
-
-		// Correct overflow when moving from lighter to darker gradients
-		if start.R > end.R && r > -255.00 {
-			r = -255.00
-		}
-		if start.G > end.G && g > -255.00 {
-			g = -255.00
-		}
-		if start.B > end.B && b > -255.00 {
-			b = -255.00
+		// Interpolation factor across the waveform, clamped to [0, 1].
+		// A non-positive maxN would divide by zero, so treat it as a
+		// single-point gradient pinned at the start color.
+		t := 0.0
+		if maxN > 0 {
+			t = float64(n) / float64(maxN)
+			if t < 0.0 {
+				t = 0.0
+			} else if t > 1.0 {
+				t = 1.0
+			}
 		}
 
-		// Generate output color
-		return &color.RGBA{
-			R: uint8(r / 100),
-			G: uint8(g / 100),
-			B: uint8(b / 100),
-			A: 255,
+		// Linearly interpolate each channel, including alpha
+		return color.RGBA{
+			R: uint8(math.Round(startR + deltaR*t)),
+			G: uint8(math.Round(startG + deltaG*t)),
+			B: uint8(math.Round(startB + deltaB*t)),
+			A: uint8(math.Round(startA + deltaA*t)),
 		}
 	}
 }
