@@ -50,6 +50,6 @@ func ExampleGenerate() {
 
 	// Output:
 	// open: ./test/tone16bit.flac
-	// encoded: 344 bytes
+	// encoded: 253 bytes
 	// resolution: (50,256)
 }

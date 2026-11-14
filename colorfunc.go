@@ -2,7 +2,6 @@ package waveform
 
 import (
 	"image/color"
-	"math"
 	"math/rand"
 	"time"
 )
@@ -46,68 +45,40 @@ func FuzzColor(colors ...color.Color) ColorFunc {
 	}
 }
 
-// GradientColor generates a ColorFunc which produces a color gradient between two
-// RGBA input colors.  The gradient attempts to gradually reduce the distance between
-// two colors, creating a sweeping color change effect in the resulting waveform
-// image.
+// GradientColor generates a ColorFunc which produces a linear color gradient
+// between two RGBA input colors, interpolating all four channels (including
+// alpha).
 //
-// BUG(mdlayher): GradientColor does not always produce very effective gradients.
-// It depends on how close input values are, and will require more investigation.
+// The gradient is a pure function of n and maxN: the color at n == 0 is the
+// start color, the color at n == maxN (when maxN > 0) is the end color, and
+// every channel moves monotonically between its two endpoints.  The function
+// keeps no state between calls, so drawing callbacks that invoke it more than
+// once for the same n, or invoke it with n out of order, always receive the
+// same color.  Inputs outside the [0, maxN] range are clamped to the nearest
+// endpoint, and no call can produce NaN or panic.
 func GradientColor(start color.RGBA, end color.RGBA) ColorFunc {
-	// Current value starts at the first value, and gradually ascends or descends
-	// to the second.
-	current := start
-
-	// Calculate absolute distances between RGB values
-	distR := distanceUint8(start.R, end.R)
-	distG := distanceUint8(start.G, end.G)
-	distB := distanceUint8(start.B, end.B)
-
-	// Store last calculated values from each call
-	var lastR, lastG, lastB uint8
-
-	// Store last seen N value to calculate gradient
-	var lastN int
 	return func(n int, x int, y int, maxN int, maxX int, maxY int) color.Color {
-		// On first iteration, always return start value
-		if n == 0 {
+		// A single sample (or a non-positive maxN) cannot describe a range:
+		// return the start color without dividing by maxN.
+		if maxN <= 0 {
 			return start
 		}
 
-		// On final iteration, always return end value
-		if n == maxN {
+		// Clamp n into [0, maxN] so out-of-order or out-of-range callers,
+		// such as a channel drawn in reverse, cannot overshoot the gradient.
+		if n <= 0 {
+			return start
+		}
+		if n >= maxN {
 			return end
 		}
 
-		// Unless a new n value is entered, use the same color
-		if n <= lastN {
-			return current
+		return color.RGBA{
+			R: lerpUint8(start.R, end.R, n, maxN),
+			G: lerpUint8(start.G, end.G, n, maxN),
+			B: lerpUint8(start.B, end.B, n, maxN),
+			A: lerpUint8(start.A, end.A, n, maxN),
 		}
-
-		// New n value, store it now
-		lastN = n
-
-		// Return the current color the vast majority of the time, so that
-		// the gradient is very gradual.
-		//
-		// This math is completely made up, but appears to work well enough
-		// for our purposes.
-		if n%(int(math.Pow(float64(maxN/255), 2))) != 0 {
-			return current
-		}
-
-		// Recalculate current values, taking into account known starting points,
-		// ending points, etc.
-		current.R = stepValue(start.R > end.R, maxN, distR, current.R, lastR)
-		lastR = current.R
-
-		current.G = stepValue(start.G > end.G, maxN, distG, current.G, lastG)
-		lastG = current.G
-
-		current.B = stepValue(start.B > end.B, maxN, distB, current.B, lastB)
-		lastB = current.B
-
-		return current
 	}
 }
 
@@ -140,40 +111,17 @@ func StripeColor(colors ...color.Color) ColorFunc {
 	}
 }
 
-// distanceUint8 calculates the absolute value of the distance between
-// two uint8 values.
-func distanceUint8(start uint8, end uint8) uint8 {
-	if start > end {
-		return start - end
-	}
-
-	return end - start
-}
-
-// stepValue returns a new uint8 color value, based upon a variety of input values.
-// TODO(mdlayher): clean this up or break it into smaller pieces
-func stepValue(greater bool, maxN int, dist uint8, current uint8, last uint8) uint8 {
-	// If no distance, always return current value
-	if dist == 0 {
-		return current
-	}
-
-	// Calculate step based upon max N and distance
-	step := uint8(math.Floor(float64(maxN) / float64(dist)))
-
-	// If start is greater, prevent underflow
-	if greater {
-		if current > 0 && (current-step) < last {
-			current -= step
-		}
-	} else {
-		// If end is greater, prevent overflow
-		if current < 255 && (current+step) > last {
-			current += step
-		}
-	}
-
-	return current
+// lerpUint8 performs integer linear interpolation between two uint8 channel
+// values at position n of maxN.  It uses only integer arithmetic, so it never
+// produces NaN, and does constant work per call.
+//
+// The caller is responsible for ensuring maxN > 0 and 0 < n < maxN; under
+// those conditions the result is exact at the endpoints (returning from and
+// to) and bounded between from and to for every intermediate n, so repeated
+// values stay flat and the sequence remains monotonic.
+func lerpUint8(from uint8, to uint8, n int, maxN int) uint8 {
+	// widen to int64 so (to-from)*n cannot overflow
+	return uint8((int64(from)*int64(maxN-n) + int64(to)*int64(n)) / int64(maxN))
 }
 
 // filterNilColors strips any nil color.Color values from the input slice.
